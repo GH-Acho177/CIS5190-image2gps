@@ -236,6 +236,7 @@ def main() -> None:
         inputs = list(X)
     elif isinstance(X, np.ndarray):
         inputs = list(X)
+
     else:
         inputs = list(X)
 
