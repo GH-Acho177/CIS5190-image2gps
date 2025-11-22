@@ -8,7 +8,7 @@ This repository contains a complete pipeline for predicting **GPS coordinates (l
 
 ### 1. Add your dataset
 
-Place all raw `.jpg`, `.jpeg`, or `.png` files inside: data/photos/
+Place all raw `.jpg`, `.jpeg`, or `.png` files inside: data/
 
 Make sure images contain EXIF GPS information.
 
@@ -71,25 +71,6 @@ This prints:
 - MAE / RMSE in degrees  
 - RMSE in meters  
 - average distance error in meters  
-
----
-
-## Model Overview
-
-The model is a modified ResNet18:
-
-
-
-ResNet18
-└── fc → Linear(512 → 2) # outputs (latitude, longitude)
-
-
-Key properties:
-
-- No pretrained weights (weights=None)  
-- MSE loss on normalized GPS coordinates  
-- Standard image augmentations during training  
-- Outputs real lat/lon values after de-normalization  
 
 ---
 

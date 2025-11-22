@@ -18,13 +18,17 @@ from model import Model
 CSV_PATH = "data/metadata.csv"
 SAVE_PATH = "model.pt"
 
-BATCH_SIZE = 32
-NUM_EPOCHS = 10
+BATCH_SIZE = 16
+NUM_EPOCHS = 50
 LEARNING_RATE = 1e-4
-STEP_SIZE = 5
-GAMMA = 0.1
 VAL_SPLIT = 0.2
+T_MAX=50
+ETA_MIN=5e-6
 RANDOM_SEED = 42
+NORMALIZE = T.Normalize(
+    mean=[0.485, 0.456, 0.406],
+    std=[0.229, 0.224, 0.225],
+)
 
 def set_seed(seed=RANDOM_SEED):
     random.seed(seed)
@@ -47,6 +51,7 @@ class GPSDataset(Dataset):
     def __getitem__(self, idx):
         row = self.df.iloc[idx]
         img_path = row["image_path"]
+        img_path = os.path.join("data", img_path)
         lat = float(row["Latitude"])
         lon = float(row["Longitude"])
 
@@ -62,15 +67,17 @@ class GPSDataset(Dataset):
 # TRANSFORMS
 def build_transforms():
     train_transform = T.Compose([
-        T.RandomResizedCrop(224),
+        T.Resize((224, 224)),
         T.RandomHorizontalFlip(),
-        T.RandomRotation(15),
+        T.RandomRotation(10),
         T.ToTensor(),
+        NORMALIZE,
     ])
 
     val_transform = T.Compose([
         T.Resize((224, 224)),
         T.ToTensor(),
+        NORMALIZE,
     ])
 
     return train_transform, val_transform
@@ -106,8 +113,8 @@ def build_dataloaders(csv_path, batch_size, val_split):
     # stats (from train only)
     lat_mean = float(train_df["Latitude"].mean())
     lon_mean = float(train_df["Longitude"].mean())
-    lat_std = float(train_df["Latitude"].std() or 1.0)
-    lon_std = float(train_df["Longitude"].std() or 1.0)
+    lat_std = max(float(train_df["Latitude"].std() or 1.0), 1e-6)
+    lon_std = max(float(train_df["Longitude"].std() or 1.0), 1e-6)
 
     train_transform, val_transform = build_transforms()
 
@@ -141,10 +148,11 @@ def build_model(device, stats):
 
     backbone = wrapper.model  # inner ResNet18
 
-    criterion = nn.MSELoss()
+    criterion = nn.SmoothL1Loss()
     optimizer = torch.optim.Adam(backbone.parameters(), lr=LEARNING_RATE)
-    scheduler = StepLR(optimizer, step_size=STEP_SIZE, gamma=GAMMA)
-
+    #scheduler = StepLR(optimizer, step_size=STEP_SIZE, gamma=GAMMA)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer, T_MAX, ETA_MIN)
     return wrapper, backbone, criterion, optimizer, scheduler
 
 # TRAIN + VALIDATE
@@ -196,6 +204,7 @@ def train_and_validate(
 
         # ---------------------- VAL ----------------------
         wrapper.eval()
+        backbone.eval()
         val_sq_dist = 0.0
         baseline_sq_dist = 0.0
         total = 0

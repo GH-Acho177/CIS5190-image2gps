@@ -11,6 +11,7 @@ from typing import Any, Iterable, List, Tuple
 import numpy as np
 import pandas as pd
 import torch
+from matplotlib import pyplot as plt
 
 
 def _dynamic_import(module_path: str, module_name: str):
@@ -251,6 +252,39 @@ def main() -> None:
     print(f"rmse (deg): {metrics['rmse']:.6f}")
     print(f"avg_distance_m: {metrics['avg_distance_m']:.3f}")
 
+    def plot_predictions(preds, targets_raw):
+        """
+        visualize predicted vs actual GPS points.
+        """
+        all_preds_denorm = _ensure_pairs(preds)
+        all_actuals_denorm = _ensure_pairs(targets_raw)
+        n = min(len(all_preds_denorm), len(all_actuals_denorm))
+        all_preds_denorm = all_preds_denorm[:n]
+        all_actuals_denorm = all_actuals_denorm[:n]
+
+        plt.figure(figsize=(10, 5))
+
+        # Plot actual points
+        plt.scatter(all_actuals_denorm[:, 1], all_actuals_denorm[:, 0], label='Actual', color='blue', alpha=0.6)
+
+        # Plot predicted points
+        plt.scatter(all_preds_denorm[:, 1], all_preds_denorm[:, 0], label='Predicted', color='red', alpha=0.6)
+
+        # Draw lines connecting actual and predicted points
+        for i in range(len(all_actuals_denorm)):
+            plt.plot(
+                [all_actuals_denorm[i, 1], all_preds_denorm[i, 1]],
+                [all_actuals_denorm[i, 0], all_preds_denorm[i, 0]],
+                color='gray', linewidth=0.5
+            )
+
+        plt.legend()
+        plt.xlabel('Longitude')
+        plt.ylabel('Latitude')
+        plt.title('Actual vs. Predicted GPS Coordinates with Error Lines')
+        plt.show()
+
+    plot_predictions(preds, targets_raw)
 
 if __name__ == "__main__":
     main()

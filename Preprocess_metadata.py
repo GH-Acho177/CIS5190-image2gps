@@ -100,7 +100,7 @@ def create_metadata(img_root, output_csv="metadata.csv"):
 
         # Add row
         rows.append({
-            "image_path": p,
+            "image_path": os.path.basename(p),
             "Latitude": lat,
             "Longitude": lon
         })
@@ -123,6 +123,6 @@ def create_metadata(img_root, output_csv="metadata.csv"):
 
 if __name__ == "__main__":
     create_metadata(
-        img_root="data/photos",
-        output_csv="data/metadata.csv"
+        img_root="extracted_images",
+        output_csv="extracted_images/metadata.csv"
     )
