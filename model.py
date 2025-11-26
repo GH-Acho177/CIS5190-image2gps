@@ -1,6 +1,7 @@
 import torch
 from torch import nn
 from typing import Any, Iterable, List
+import resnet
 
 class BasicBlock(nn.Module):
     """small residual block."""
@@ -123,6 +124,8 @@ class Model(nn.Module):
         super().__init__(*args, **kwargs)
         # Initialize your model here
         # self.model = SmallCNN()
+        # self.model = ResNet50()
+        # self.model = ResNet101()
         self.model = GeoResNetLite()
         # Normalization stats
         self.register_buffer("lat_mean", torch.tensor(0.0))
