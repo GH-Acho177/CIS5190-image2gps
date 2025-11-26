@@ -82,6 +82,7 @@ This prints:
 | preprocess.py | Resize and normalize images for the evaluator                     |
 | model.py | Leaderboard-compatible inference model                            |
 | train.py | Full training pipeline including normalization and validation     |
+| resnet.py | ResNet Implementation (ResNet50, ResNet101)|
 | eval_project_a.py | Evaluator                                                         |
 | metadata.csv | Generated metadata used for both training and evaluation          |
 
