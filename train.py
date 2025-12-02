@@ -1,280 +1,290 @@
-import os
 import math
-import random
-import numpy as np
-import pandas as pd
-
+import os
+import argparse
 import torch
-import torch.nn as nn
+from torch import nn
 from torch.utils.data import Dataset, DataLoader
-import torchvision.transforms as T
+from torchvision import transforms as T
 
-from geopy.distance import geodesic
-from torch.optim.lr_scheduler import StepLR
-
+from preprocess import prepare_data
 from model import Model
+import matplotlib.pyplot as plt
 
-# CONFIG
-CSV_PATH = "data/metadata.csv"
-SAVE_PATH = "model.pt"
+from PIL import Image
 
-BATCH_SIZE = 16
-NUM_EPOCHS = 50
-LEARNING_RATE = 1e-4
-VAL_SPLIT = 0.2
-T_MAX=50
-ETA_MIN=5e-6
-RANDOM_SEED = 42
-NORMALIZE = T.Normalize(
-    mean=[0.485, 0.456, 0.406],
-    std=[0.229, 0.224, 0.225],
-)
+IMAGENET_MEAN = [0.485, 0.456, 0.406]
+IMAGENET_STD  = [0.229, 0.224, 0.225]
 
-def set_seed(seed=RANDOM_SEED):
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
+_transform = T.Compose([
+    T.Resize((256,256)),
+    T.CenterCrop(224),                # consistent framing
+    T.ColorJitter(0.1,0.1,0.1),       # mild lighting noise
+    T.ToTensor(),
+    T.Normalize(IMAGENET_MEAN, IMAGENET_STD),
+])
 
-# DATASET
-class GPSDataset(Dataset):
+class Img2GPSDataset(Dataset):
     """
-    Loads image_path, Latitude, Longitude from CSV.
+    Wraps tensors returned by prepare_data into a standard PyTorch Dataset.
     """
-    def __init__(self, df: pd.DataFrame, transform=None):
-        self.df = df.reset_index(drop=True)
-        self.transform = transform
+    def __init__(self, X, y):
+        self.X = X
+        self.y = y
 
     def __len__(self):
-        return len(self.df)
+        return len(self.X)
 
     def __getitem__(self, idx):
-        row = self.df.iloc[idx]
-        img_path = row["image_path"]
-        img_path = os.path.join("data", img_path)
-        lat = float(row["Latitude"])
-        lon = float(row["Longitude"])
-
-        from PIL import Image
+        img_path = self.X[idx]
         img = Image.open(img_path).convert("RGB")
+        img = _transform(img)
+        return img, self.y[idx]
 
-        if self.transform:
-            img = self.transform(img)
 
-        target = torch.tensor([lat, lon], dtype=torch.float32)
-        return img, target
-
-# TRANSFORMS
-def build_transforms():
-    train_transform = T.Compose([
-        T.Resize((224, 224)),
-        T.RandomHorizontalFlip(),
-        T.RandomRotation(10),
-        T.ToTensor(),
-        NORMALIZE,
-    ])
-
-    val_transform = T.Compose([
-        T.Resize((224, 224)),
-        T.ToTensor(),
-        NORMALIZE,
-    ])
-
-    return train_transform, val_transform
-
-# DATA LOADERS
-def build_dataloaders(csv_path, batch_size, val_split):
-    df = pd.read_csv(csv_path)
-    df.columns = [c.strip() for c in df.columns]
-
-    required = ["image_path", "Latitude", "Longitude"]
-    for col in required:
-        if col not in df.columns:
-            raise KeyError(f"Missing column: {col}")
-
-    # coordinate sanity
-    df = df[df["Latitude"].between(-90, 90)]
-    df = df[df["Longitude"].between(-180, 180)]
-    df = df.reset_index(drop=True)
-
-    # train/val split
-    indices = np.arange(len(df))
-    np.random.shuffle(indices)
-    split = int(len(df) * (1 - val_split))
-    train_idx, val_idx = indices[:split], indices[split:]
-
-    train_df = df.iloc[train_idx]
-    val_df = df.iloc[val_idx]
-
-    print(f"Total samples: {len(df)}")
-    print(f"Train samples: {len(train_df)}")
-    print(f"Val samples:   {len(val_df)}")
-
-    # stats (from train only)
-    lat_mean = float(train_df["Latitude"].mean())
-    lon_mean = float(train_df["Longitude"].mean())
-    lat_std = max(float(train_df["Latitude"].std() or 1.0), 1e-6)
-    lon_std = max(float(train_df["Longitude"].std() or 1.0), 1e-6)
-
-    train_transform, val_transform = build_transforms()
-
-    train_ds = GPSDataset(train_df, transform=train_transform)
-    val_ds = GPSDataset(val_df, transform=val_transform)
-
-    train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=0)
-    val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False, num_workers=0)
-
-    stats = (lat_mean, lon_mean, lat_std, lon_std)
-    return train_loader, val_loader, stats
-
-# MODEL
-def build_model(device, stats):
+def plot_gt_only(gt):
     """
-    Build the leaderboard-wrapped model and set normalization stats.
-    We train the inner backbone (wrapper.model) to predict normalized coords.
+    Plot only the ground-truth GPS points.
     """
-    lat_mean, lon_mean, lat_std, lon_std = stats
+    gt = gt.cpu().numpy()  # ensure numpy
 
-    wrapper = Model()
-    wrapper.to(device)
-    wrapper.train()
+    plt.figure(figsize=(5, 5))
+    plt.scatter(gt[:, 1], gt[:, 0], color="blue", alpha=0.7, s=25, label="GT")
+    plt.xlabel("Longitude")
+    plt.ylabel("Latitude")
+    plt.legend()
+    plt.gca().set_aspect('equal', adjustable='box')
+    plt.tight_layout()
+    plt.close()
 
-    # Fill normalization buffers so they are saved in state_dict
+def plot_predictions_vs_gt(gt, pred, epoch):
+    """
+    gt: Tensor (N, 2)
+    pred: Tensor (N, 2)
+    Saves a scatter plot of predicted vs ground-truth coordinates.
+    """
+    gt = gt.numpy()
+    pred = pred.numpy()
+
+    plt.figure(figsize=(5, 5))
+    plt.scatter(gt[:, 1], gt[:, 0], label="Ground Truth", alpha=0.6)  # lon vs lat
+    plt.scatter(pred[:, 1], pred[:, 0], label="Predicted", alpha=0.6)
+
+    for i in range(gt.shape[0]):
+        gt_lat, gt_lon = gt[i]
+        pred_lat, pred_lon = pred[i]
+
+        # Draw a thin line connecting GT → Pred
+        plt.plot(
+            [gt_lon, pred_lon],
+            [gt_lat, pred_lat],
+            color="gray",
+            linewidth=0.6,
+            alpha=0.7,
+        )
+
+    plt.xlabel("Longitude")
+    plt.ylabel("Latitude")
+    plt.legend()
+    plt.title(f"Epoch {epoch+1}: Pred vs GT")
+    plt.savefig(f"plots/data_epoch_{epoch+1}.png", dpi=200)
+    plt.close()
+
+def train_one_epoch(model, dataloader, optimizer, criterion):
+    model.train()
+    total_loss = 0.0
+
+    for X, y in dataloader:
+        X = X.to(model.device)
+        y = y.to(model.device)
+
+        optimizer.zero_grad()
+
+        preds = model.backbone(X)
+        loss = criterion(preds, y)
+
+        loss.backward()
+        optimizer.step()
+
+        total_loss += loss.item() * X.size(0)
+
+    return total_loss / len(dataloader.dataset)
+
+def haversine_distance(lat1, lon1, lat2, lon2):
+    """
+    Computes distance between two GPS points in meters.
+    Input: lat/lon in degrees.
+    """
+    R = 6371000  # Earth radius in meters
+
+    # Convert to radians
+    lat1, lon1, lat2, lon2 = map(
+        math.radians, [lat1, lon1, lat2, lon2]
+    )
+
+    dlat = lat2 - lat1
+    dlon = lon2 - lon1
+
+    a = (math.sin(dlat / 2) ** 2 +
+         math.cos(lat1) * math.cos(lat2) *
+         math.sin(dlon / 2) ** 2)
+
+    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+
+    return R * c
+
+def validate(model, dataloader, criterion, lat_center, lon_center, scale):
+    model.eval()
+    total_loss = 0.0
+
+    all_preds = []
+    all_targets = []
+
     with torch.no_grad():
-        wrapper.lat_mean.fill_(lat_mean)
-        wrapper.lon_mean.fill_(lon_mean)
-        wrapper.lat_std.fill_(lat_std)
-        wrapper.lon_std.fill_(lon_std)
+        for X, y in dataloader:
+            X = X.to(model.device)
+            y = y.to(model.device)
 
-    backbone = wrapper.model  # inner ResNet18
+            preds = model.backbone(X)
 
-    criterion = nn.SmoothL1Loss()
-    optimizer = torch.optim.Adam(backbone.parameters(), lr=LEARNING_RATE)
-    #scheduler = StepLR(optimizer, step_size=STEP_SIZE, gamma=GAMMA)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-        optimizer, T_MAX, ETA_MIN)
-    return wrapper, backbone, criterion, optimizer, scheduler
+            all_preds.append(preds.cpu())
+            y_deg = y.clone()
+            y_deg[:, 0] = lat_center + y[:, 0] * scale
+            y_deg[:, 1] = lon_center + y[:, 1] * scale
+            all_targets.append(y_deg.cpu())
 
-# TRAIN + VALIDATE
-def train_and_validate(
-    wrapper,
-    backbone,
-    train_loader,
-    val_loader,
-    criterion,
-    optimizer,
-    scheduler,
-    stats,
-    device,
-    num_epochs,
-):
-    lat_mean, lon_mean, lat_std, lon_std = stats
-    mean_t = torch.tensor([lat_mean, lon_mean], dtype=torch.float32, device=device)
-    std_t = torch.tensor([lat_std, lon_std], dtype=torch.float32, device=device)
+            loss = criterion(preds, y)
+            total_loss += loss.item() * X.size(0)
 
-    best_rmse = float("inf")
+    all_preds = torch.cat(all_preds, dim=0)
+    all_targets = torch.cat(all_targets, dim=0)
 
-    print("\n===== START TRAINING =====\n")
+    preds_deg = all_preds.clone()
+    preds_deg[:, 0] = lat_center + all_preds[:, 0] * scale
+    preds_deg[:, 1] = lon_center + all_preds[:, 1] * scale
 
-    for epoch in range(1, num_epochs + 1):
+    dists = []
+    for i in range(all_preds.size(0)):
+        lat_pred, lon_pred = preds_deg[i].tolist()
+        lat_gt, lon_gt = all_targets[i].tolist()
 
-        # ---------------------- TRAIN ----------------------
-        wrapper.train()
-        epoch_loss = 0.0
+        d = haversine_distance(lat_pred, lon_pred, lat_gt, lon_gt)
+        dists.append(d)
 
-        for images, gps in train_loader:
-            images = images.to(device)
-            gps = gps.to(device)   # degrees
+    avg_dist = sum(dists) / len(dists)
 
-            # normalize labels
-            gps_norm = (gps - mean_t) / std_t
+    return total_loss / len(dataloader.dataset), preds_deg, all_targets, avg_dist
 
-            optimizer.zero_grad()
-            preds = backbone(images)         # normalized outputs
-            loss = criterion(preds, gps_norm)
-            loss.backward()
-            optimizer.step()
 
-            epoch_loss += loss.item()
-
-        scheduler.step()
-
-        avg_train = epoch_loss / max(1, len(train_loader))
-        print(f"[Epoch {epoch}/{num_epochs}] Train MSE (norm²): {avg_train:.6f}")
-
-        # ---------------------- VAL ----------------------
-        wrapper.eval()
-        backbone.eval()
-        val_sq_dist = 0.0
-        baseline_sq_dist = 0.0
-        total = 0
-
-        with torch.no_grad():
-            for images, gps in val_loader:
-                images = images.to(device)
-                gps = gps.to(device)              # degrees
-                gps_np = gps.cpu().numpy()
-
-                preds_norm = backbone(images)     # normalized
-                preds_deg = preds_norm * std_t + mean_t  # de-normalize to degrees
-                preds_np = preds_deg.cpu().numpy()
-
-                for p, a in zip(preds_np, gps_np):
-                    d_val = geodesic((a[0], a[1]), (p[0], p[1])).meters
-                    d_base = geodesic((a[0], a[1]), (lat_mean, lon_mean)).meters
-
-                    val_sq_dist += d_val**2
-                    baseline_sq_dist += d_base**2
-                    total += 1
-
-        if total > 0:
-            val_mse = val_sq_dist / total
-            base_mse = baseline_sq_dist / total
-            val_rmse = math.sqrt(val_mse)
-            base_rmse = math.sqrt(base_mse)
-        else:
-            val_rmse = float("inf")
-            base_rmse = float("inf")
-
-        print(f"[Epoch {epoch}] Val RMSE (m): {val_rmse:.2f}, Baseline RMSE (m): {base_rmse:.2f}")
-
-        # save best model
-        if val_rmse < best_rmse:
-            best_rmse = val_rmse
-            torch.save(wrapper.state_dict(), SAVE_PATH)
-            print(f" → Saved best model: RMSE = {best_rmse:.2f} m\n")
-        else:
-            print(" (No improvement)\n")
-
-    print("===== TRAINING FINISHED =====")
-    print(f"Best validation RMSE: {best_rmse:.2f} m")
-
-def main():
-    set_seed()
-
+def main(args):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Using device: {device}")
 
-    train_loader, val_loader, stats = build_dataloaders(
-        CSV_PATH,
-        batch_size=BATCH_SIZE,
-        val_split=VAL_SPLIT,
+    # Load data
+    X_train, y_train = prepare_data(args.train_csv)
+    lat_center = y_train[:, 0].mean().item()
+    lon_center = y_train[:, 1].mean().item()
+
+    lat_std = y_train[:, 0].std().item()
+    lon_std = y_train[:, 1].std().item()
+
+    scale = ((lat_std + lon_std) / 2)
+
+    y_train_norm = y_train.clone()
+    y_train_norm[:, 0] = (y_train[:, 0] - lat_center) / scale
+    y_train_norm[:, 1] = (y_train[:, 1] - lon_center) / scale
+
+    dataset = Img2GPSDataset(X_train, y_train_norm)
+
+    # Optional validation
+    if args.val_csv:
+        X_val, y_val = prepare_data(args.val_csv)
+
+        y_val_norm = y_val.clone()
+        y_val_norm[:, 0] = (y_val[:, 0] - lat_center) / scale
+        y_val_norm[:, 1] = (y_val[:, 1] - lon_center) / scale
+
+        val_dataset = Img2GPSDataset(X_val, y_val_norm)
+    else:
+        val_dataset = None
+
+    train_loader = DataLoader(
+        dataset,
+        batch_size=args.batch_size,
+        shuffle=True,
+        num_workers=8,
+        pin_memory=True,
+        persistent_workers=True
     )
 
-    wrapper, backbone, criterion, optimizer, scheduler = build_model(device, stats)
+    if val_dataset:
+        val_loader = DataLoader(
+            val_dataset,
+            batch_size=args.batch_size,
+            shuffle=False,
+            num_workers=8,
+            pin_memory=True,
+            persistent_workers=True
+        )
 
-    train_and_validate(
-        wrapper,
-        backbone,
-        train_loader,
-        val_loader,
-        criterion,
-        optimizer,
-        scheduler,
-        stats,
-        device,
-        num_epochs=NUM_EPOCHS,
-    )
+    # Build model
+    model = Model()
+    model = model.to(device)
+
+    model.lat_center_buf[0] = lat_center
+    model.lon_center_buf[0] = lon_center
+    model.scale_buf[0] = scale
+
+    # Loss & optimizer
+    criterion = nn.MSELoss()
+    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
+
+    os.makedirs("plots", exist_ok=True)
+
+    # Training loop
+    for epoch in range(args.epochs):
+        train_loss = train_one_epoch(model, train_loader, optimizer, criterion)
+
+        if val_dataset:
+            val_loss, val_preds, val_gts, val_dist = validate(
+                model, val_loader, criterion,
+                lat_center, lon_center, scale
+            )
+
+            print(
+                f"Epoch {epoch + 1}/{args.epochs} | "
+                f"Train Loss (norm): {train_loss:.6f} | "
+                f"Val Loss (norm): {val_loss:.6f} | "
+                f"Val Avg Dist (m): {val_dist:.2f}"
+            )
+
+            plot_gt_only(val_gts)
+            plot_predictions_vs_gt(val_gts, val_preds, epoch)
+        else:
+            print(f"Epoch {epoch+1}/{args.epochs} | Train Loss: {train_loss:.4f}")
+
+        # Create a fresh model instance for saving
+        model_to_save = Model()
+        model_to_save.load_state_dict(model.state_dict())
+
+        # Copy buffer values
+        model_to_save.lat_center_buf[0] = lat_center
+        model_to_save.lon_center_buf[0] = lon_center
+        model_to_save.scale_buf[0] = scale
+
+        # Save
+        model_to_save = model_to_save.to("cpu")
+
+        torch.save(model_to_save.state_dict(), f"Model/model_{epoch+1}.pt")
+        print(f"Saved model weights t Model/model_{epoch+1}.pt")
+
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser()
+
+    parser.add_argument("--train_csv", type=str, required=True, help="Path to training metadata.csv")
+    parser.add_argument("--val_csv", type=str, default=None, help="Optional validation metadata.csv")
+    parser.add_argument("--epochs", type=int, default=15)
+    parser.add_argument("--batch_size", type=int, default=64)
+    parser.add_argument("--lr", type=float, default=1e-3)
+
+    args = parser.parse_args()
+    main(args)

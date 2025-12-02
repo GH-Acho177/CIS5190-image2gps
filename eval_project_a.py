@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import math
-import os
 import sys
 import time
 from typing import Any, Iterable, List, Tuple
@@ -12,6 +11,69 @@ import numpy as np
 import pandas as pd
 import torch
 from matplotlib import pyplot as plt
+
+
+import matplotlib.image as mpimg
+def plot_global_map_for_image(
+    image_path,
+    gt_lat, gt_lon,
+    pred_lat, pred_lon,
+    all_gt_np,
+    dist_m
+):
+    """
+    For a single image:
+      - show input image
+      - show global map with:
+           * all GT points (small blue)
+           * this image's GT (big blue)
+           * prediction (red)
+           * line GT -> Pred
+    """
+
+    img = mpimg.imread(image_path)
+
+    fig, axes = plt.subplots(1, 2, figsize=(16, 7))
+
+    # ------------------------------------------------------------
+    # LEFT: IMAGE
+    # ------------------------------------------------------------
+    axes[0].imshow(img)
+    axes[0].axis("off")
+    axes[0].set_title("Input Image")
+
+    # ------------------------------------------------------------
+    # RIGHT: GLOBAL MAP
+    # ------------------------------------------------------------
+    ax = axes[1]
+
+    # all GT points (blue, small)
+    ax.scatter(all_gt_np[:, 1], all_gt_np[:, 0], c="lightblue", s=10, label="All Ground Truth", alpha=0.5)
+
+    # this image's GT (highlight)
+    ax.scatter(gt_lon, gt_lat, c="blue", s=80, label="This GT (target)", edgecolors="black")
+
+    # prediction (red)
+    ax.scatter(pred_lon, pred_lat, c="red", s=80, label="Prediction", edgecolors="black")
+
+    # line between GT and Pred
+    ax.plot([gt_lon, pred_lon], [gt_lat, pred_lat], color="gray")
+
+    ax.set_xlabel("Longitude")
+    ax.set_ylabel("Latitude")
+    ax.set_title(f"Global Map — Error: {dist_m:.2f} m")
+
+    # set map bounds (just around the whole dataset)
+    lats = all_gt_np[:, 0]
+    lons = all_gt_np[:, 1]
+    pad_lat = (lats.max() - lats.min()) * 0.05
+    pad_lon = (lons.max() - lons.min()) * 0.05
+
+    ax.set_xlim(lons.min() - pad_lon, lons.max() + pad_lon)
+    ax.set_ylim(lats.min() - pad_lat, lats.max() + pad_lat)
+
+    ax.legend()
+    plt.show()
 
 
 def _dynamic_import(module_path: str, module_name: str):
@@ -231,18 +293,64 @@ def main() -> None:
     # Instantiate while preventing any default weight load from student's constructor
     model = _instantiate_model(model_mod, weights_path_override="__no_weights__.pth")
     model = _load_checkpoint(model, args.weights)
-
     X, _ = preproc_mod.prepare_data(args.csv)
     if isinstance(X, torch.Tensor):
         inputs = list(X)
     elif isinstance(X, np.ndarray):
         inputs = list(X)
-
     else:
         inputs = list(X)
 
     preds, total_s, avg_ms = _predict_in_batches(model, inputs, batch_size=args.batch_size)
     targets_raw = _load_raw_lat_lon(args.csv)
+
+    # ---------------Show image--------------------
+    # def compute_distance_m(lat1, lon1, lat2, lon2):
+    #     """Return Haversine distance in meters."""
+    #     R = 6371000.0
+    #     phi1, phi2 = math.radians(lat1), math.radians(lat2)
+    #     dphi = math.radians(lat2 - lat1)
+    #     dlambda = math.radians(lon2 - lon1)
+    #
+    #     a = math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2) ** 2
+    #     return 2 * R * math.asin(math.sqrt(a))
+    #
+    # df = pd.read_csv(args.csv)
+    # img_col = _resolve_column(df.columns.tolist(), ["image_path", "img", "path"])
+    #
+    # preds_np = _ensure_pairs(preds)
+    # gt_np = _ensure_pairs(targets_raw)
+    #
+    # # For global map, we plot ALL ground-truth GPS positions
+    # all_gt_np = gt_np.copy()
+    #
+    # for i in range(len(preds_np)):
+    #     img_path = "test/" + df.iloc[i][img_col]
+    #
+    #     gt_lat, gt_lon = gt_np[i]
+    #     pred_lat, pred_lon = preds_np[i]
+    #
+    #     # compute distance
+    #     dist_m = compute_distance_m(gt_lat, gt_lon, pred_lat, pred_lon)
+    #     if dist_m>150:
+    #         # print info
+    #         print("\n====================================================")
+    #         print(f"Image #{i}: {img_path}")
+    #         print(f"Ground Truth :  lat={gt_lat:.8f}, lon={gt_lon:.8f}")
+    #         print(f"Prediction   :  lat={pred_lat:.8f}, lon={pred_lon:.8f}")
+    #         print(f"Distance     :  {dist_m:.3f} meters")
+    #         print("====================================================")
+    #
+    #         # plot global map
+    #         plot_global_map_for_image(
+    #             img_path,
+    #             gt_lat, gt_lon,
+    #             pred_lat, pred_lon,
+    #             all_gt_np,
+    #             dist_m
+    #         )
+    #-----------------------------------
+
     metrics = compute_metrics(preds, targets_raw)
 
     print(f"num_examples: {metrics['num_examples']}")

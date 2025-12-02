@@ -41,14 +41,14 @@ Train the ResNet18 model using:
 
 
 
-    python train.py
+    python train.py --train_csv clean/clean_metadata.csv --epochs 20 --val_csv test/metadata.csv
 
 
 After training, the model weights will be saved to:
 
 
 
-    model.pt
+    /Model/
 
 
 ---

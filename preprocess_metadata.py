@@ -1,11 +1,8 @@
 import numpy as np
 import pandas as pd
-import torch
-from typing import Any, List, Tuple
 import os, glob
 from PIL import Image, ImageStat
 import piexif
-import torchvision.transforms as T
 
 def dms_to_dd(dms, ref):
     """Convert degree/minute/second to decimal degrees."""
@@ -123,6 +120,6 @@ def create_metadata(img_root, output_csv="metadata.csv"):
 
 if __name__ == "__main__":
     create_metadata(
-        img_root="extracted_images",
-        output_csv="extracted_images/metadata.csv"
+        img_root="data",
+        output_csv="data/metadata.csv"
     )
