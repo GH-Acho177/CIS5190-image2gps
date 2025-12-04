@@ -15,6 +15,8 @@ from PIL import Image
 IMAGENET_MEAN = [0.485, 0.456, 0.406]
 IMAGENET_STD  = [0.229, 0.224, 0.225]
 
+CUSTOMENAME = "smooth_haversine_loss_mix"
+
 _transform = T.Compose([
     T.Resize((256,256)),
     T.CenterCrop(224),                # consistent framing
@@ -86,8 +88,40 @@ def plot_predictions_vs_gt(gt, pred, epoch):
     plt.ylabel("Latitude")
     plt.legend()
     plt.title(f"Epoch {epoch+1}: Pred vs GT")
-    plt.savefig(f"plots/data_epoch_{epoch+1}.png", dpi=200)
+    plt.savefig(f"plots/data_epoch_{epoch+1}_{CUSTOMENAME}.png", dpi=200)
     plt.close()
+
+def haversine_loss(pred, target, lat_center, lon_center, scale):
+    """
+    pred, target: (B, 2) normalized lat/lon tensors
+    convert to degrees, compute Haversine distance per sample, return mean loss
+    """
+    # Recover degrees
+    pred_lat = lat_center + pred[:, 0] * scale
+    pred_lon = lon_center + pred[:, 1] * scale
+    pred_lat = pred_lat.clamp(min=lat_center - 0.01, max=lat_center + 0.01)
+    pred_lon = pred_lon.clamp(min=lon_center - 0.01, max=lon_center + 0.01)
+
+    gt_lat   = lat_center + target[:, 0] * scale
+    gt_lon   = lon_center + target[:, 1] * scale
+
+    # Convert to radians
+    lat1 = torch.deg2rad(pred_lat)
+    lon1 = torch.deg2rad(pred_lon)
+    lat2 = torch.deg2rad(gt_lat)
+    lon2 = torch.deg2rad(gt_lon)
+
+    dlat = lat2 - lat1
+    dlon = lon2 - lon1
+
+    a = torch.sin(dlat/2)**2 + torch.cos(lat1)*torch.cos(lat2)*torch.sin(dlon/2)**2
+    a = a.clamp(min=1e-8, max=1 - 1e-8)
+    c = 2 * torch.atan2(torch.sqrt(a), torch.sqrt(1 - a))
+
+    R = 6371000.0  # meters
+    dist = R * c
+
+    return dist.mean()
 
 def train_one_epoch(model, dataloader, optimizer, criterion):
     model.train()
@@ -100,7 +134,15 @@ def train_one_epoch(model, dataloader, optimizer, criterion):
         optimizer.zero_grad()
 
         preds = model.backbone(X)
-        loss = criterion(preds, y)
+
+        base = haversine_loss(preds, y, model.lat_center_buf.item(), model.lon_center_buf.item(),
+                              model.scale_buf.item())
+        smooth = 0.001 * torch.nn.functional.l1_loss(preds, y)
+        loss = base + smooth
+
+        # loss = criterion(preds, y)
+        # loss = haversine_loss(preds, y, model.lat_center_buf.item(), model.lon_center_buf.item(),
+        #                     model.scale_buf.item())
 
         loss.backward()
         optimizer.step()
@@ -152,7 +194,14 @@ def validate(model, dataloader, criterion, lat_center, lon_center, scale):
             y_deg[:, 1] = lon_center + y[:, 1] * scale
             all_targets.append(y_deg.cpu())
 
-            loss = criterion(preds, y)
+            # loss = criterion(preds, y)
+            #loss = haversine_loss(preds, y, lat_center, lon_center, scale)
+            base = haversine_loss(preds, y, model.lat_center_buf.item(), model.lon_center_buf.item(),
+                                  model.scale_buf.item())
+            smooth = 0.001 * torch.nn.functional.l1_loss(preds, y)
+            loss = base + smooth
+
+
             total_loss += loss.item() * X.size(0)
 
     all_preds = torch.cat(all_preds, dim=0)
@@ -273,8 +322,8 @@ def main(args):
         # Save
         model_to_save = model_to_save.to("cpu")
 
-        torch.save(model_to_save.state_dict(), f"Model/model_{epoch+1}.pt")
-        print(f"Saved model weights t Model/model_{epoch+1}.pt")
+        torch.save(model_to_save.state_dict(), f"Model/model_epoch_{epoch+1}_{CUSTOMENAME}.pt")
+        print(f"Saved model weights t Model/model_{epoch+1}_{CUSTOMENAME}.pt")
 
 
 if __name__ == "__main__":
@@ -284,7 +333,7 @@ if __name__ == "__main__":
     parser.add_argument("--val_csv", type=str, default=None, help="Optional validation metadata.csv")
     parser.add_argument("--epochs", type=int, default=15)
     parser.add_argument("--batch_size", type=int, default=64)
-    parser.add_argument("--lr", type=float, default=1e-3)
+    parser.add_argument("--lr", type=float, default=5e-4)
 
     args = parser.parse_args()
     main(args)

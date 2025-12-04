@@ -12,7 +12,7 @@ IMAGENET_STD  = [0.229, 0.224, 0.225]
 _transform = T.Compose([
     T.Resize((256,256)),
     T.CenterCrop(224),                # consistent framing
-    T.ColorJitter(0.1,0.1,0.1),       # mild lighting noise
+    #T.ColorJitter(0.1,0.1,0.1),       # mild lighting noise
     T.ToTensor(),
     T.Normalize(IMAGENET_MEAN, IMAGENET_STD),
 ])
@@ -92,7 +92,8 @@ class Model(nn.Module):
         images = []
         for item in batch_list:
             if isinstance(item, str):
-                img = Image.open(item).convert("RGB")
+                img = Image.open(item)
+                img = img.convert("RGB")
                 img = _transform(img)
                 images.append(img)
             else:
@@ -109,11 +110,10 @@ class Model(nn.Module):
         scale = self.scale_buf.item()
 
         # If scale != 1.0, assume model outputs normalized coords
-        if scale != 1.0:
-            preds_deg = preds.clone()
-            preds_deg[:, 0] = latc + preds[:, 0] * scale
-            preds_deg[:, 1] = lonc + preds[:, 1] * scale
-            preds = preds_deg
+        preds_deg = preds.clone()
+        preds_deg[:, 0] = latc + preds[:, 0] * scale
+        preds_deg[:, 1] = lonc + preds[:, 1] * scale
+        preds = preds_deg
 
 
         preds_list = preds.cpu().tolist()
